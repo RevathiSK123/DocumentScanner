@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Documents collection
+    match /documents/{documentId} {
+      // 🔥 ALLOW CREATE: Anyone authenticated can create
+      // During creation, we check request.resource.data (the incoming data)
+      allow create: if request.auth != null &&
+                     request.resource.data.userId == request.auth.uid;
+      
+      // 🔥 ALLOW READ: Any authenticated user can read any document
+      // resource.data refers to the existing document
+      allow read: if request.auth != null;
+      
+      // 🔥 ALLOW UPDATE: User must own the document
+      // Can update if they own it AND maintain the same userId
+      allow update: if request.auth != null &&
+                    resource.data.userId == request.auth.uid &&
+                    request.resource.data.userId == resource.data.userId;
+      
+      // 🔥 ALLOW DELETE: User must own the document
+      allow delete: if request.auth != null &&
+                    resource.data.userId == request.auth.uid;
+    }
+    
+    // Optional: User profiles collection
+    match /users/{userId} {
+      allow read, write: if request.auth != null &&
+                          request.auth.uid == userId;
+    }
+  }
+}
