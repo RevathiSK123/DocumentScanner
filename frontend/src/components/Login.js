@@ -3,6 +3,26 @@ import { Card, Form, Button, Alert, Container } from 'react-bootstrap';
 import { useAuth } from '../contexts/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
 
+// Map Firebase Auth error codes to user-friendly messages
+function getFriendlyAuthError(error) {
+  if (!error || !error.code) return error.message || 'Login failed.';
+  switch (error.code || error.message) {
+    case 'auth/invalid-credential':
+    case 'Firebase: Error (auth/invalid-credential).':
+      return 'Invalid email or password.';
+    case 'auth/user-not-found':
+      return 'No user found with this email.';
+    case 'auth/wrong-password':
+      return 'Incorrect password.';
+    case 'auth/too-many-requests':
+      return 'Too many failed attempts. Please try again later.';
+    case 'auth/network-request-failed':
+      return 'Network error. Please check your connection.';
+    default:
+      return error.message || 'Login failed.';
+  }
+}
+
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -28,7 +48,7 @@ export default function Login() {
       navigate('/');
     } catch (err) {
       console.error('Login error:', err);
-      setError(err.message);
+      setError(getFriendlyAuthError(err));
     } finally {
       setLoading(false);
     }
