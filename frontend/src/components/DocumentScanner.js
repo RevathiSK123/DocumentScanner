@@ -8,7 +8,6 @@ import {
   Card,
   CardContent,
   CardActions,
-  LinearProgress,
   Alert,
   Tabs,
   Tab,
@@ -20,8 +19,7 @@ import {
   Chip,
   Snackbar,
   CircularProgress,
-  Tooltip,
-  Divider
+  Tooltip
 } from '@mui/material';
 import {
   CloudUpload,
@@ -38,19 +36,19 @@ import {
   WifiOff,
   Refresh,
   Info,
-  Crop // ADDED FOR CROPPING
+  Crop
 } from '@mui/icons-material';
 import { useDropzone } from 'react-dropzone';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  processDocument,       // This should map to 'enhanceDocument'
-  extractTextFromImage,  // This should map to 'extractText'
-  generatePDF,           // This should map to 'createPDF'
-  saveDocument,          // This should map to 'storeDocument'
-  testConnection,        // This should map to 'testFunction'
+  processDocument,
+  extractTextFromImage,
+  generatePDF,
+  saveDocument,
+  testConnection,
   compressImage,
-  correctPerspective     // ADD THIS IMPORT FOR CROPPING
-} from '../firebase';    // UPDATE YOUR firebase.js EXPORTS
+  correctPerspective
+} from '../firebase';
 import DocumentPreview from './DocumentPreview';
 import ProcessingOptions from './ProcessingOptions';
 import TextResult from './TextResult';
@@ -65,7 +63,7 @@ const DocumentScanner = () => {
   const [error, setError] = useState(null);
   const [pdfUrl, setPdfUrl] = useState(null);
   const [openCamera, setOpenCamera] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState('idle'); // idle, testing, connected, failed
+  const [connectionStatus, setConnectionStatus] = useState('idle');
   const [connectionDetails, setConnectionDetails] = useState(null);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'info' });
   const videoRef = useRef(null);
@@ -75,16 +73,25 @@ const DocumentScanner = () => {
     setSnackbar({ open: true, message, severity });
   };
 
+  // Helper to create data URL from base64
+  const createDataUrl = (base64, mimeType = 'image/jpeg') => {
+    if (!base64) return '';
+    // Check if already has data URL prefix
+    if (base64.startsWith('data:')) {
+      return base64;
+    }
+    return `data:${mimeType};base64,${base64}`;
+  };
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: {
       'image/*': ['.jpeg', '.jpg', '.png', '.webp']
     },
     onDrop: async (acceptedFiles) => {
       try {
-        // Compress large files
         const processedFiles = await Promise.all(
           acceptedFiles.map(async (file) => {
-            if (file.size > 5 * 1024 * 1024) { // 5MB
+            if (file.size > 5 * 1024 * 1024) {
               showSnackbar(`Compressing ${file.name}...`, 'info');
               const compressed = await compressImage(file);
               return {
@@ -94,18 +101,21 @@ const DocumentScanner = () => {
                 type: compressed.type,
                 dataUrl: compressed.dataUrl,
                 compressed: true,
-                compressedSize: compressed.compressedSize
+                compressedSize: compressed.compressedSize,
+                base64: compressed.dataUrl.split(',')[1] // Store just base64
               };
             }
             const reader = new FileReader();
             return new Promise((resolve) => {
               reader.onload = () => {
+                const dataUrl = reader.result;
                 resolve({
                   id: Date.now() + Math.random(),
                   name: file.name,
                   size: file.size,
                   type: file.type,
-                  dataUrl: reader.result,
+                  dataUrl: dataUrl,
+                  base64: dataUrl.split(',')[1], // Extract base64 part
                   compressed: false
                 });
               };
@@ -123,7 +133,7 @@ const DocumentScanner = () => {
       }
     },
     maxFiles: 10,
-    maxSize: 10 * 1024 * 1024, // 10MB
+    maxSize: 10 * 1024 * 1024,
     onDropRejected: (rejectedFiles) => {
       const messages = rejectedFiles.map(file => {
         if (file.size > 10 * 1024 * 1024) {
@@ -136,165 +146,143 @@ const DocumentScanner = () => {
     }
   });
 
-  // Test Firebase connection - UPDATED RESPONSE HANDLING
   const testFirebaseConnection = async () => {
     setConnectionStatus('testing');
     setError(null);
     setConnectionDetails(null);
     
     try {
-      // Note: testConnection maps to 'testFunction'
       const result = await testConnection({ 
         test: 'document-scanner',
         timestamp: Date.now(),
         userId: currentUser?.uid
       });
       
-      // Callable functions return result.data
       if (result.data?.success) {
         setConnectionStatus('connected');
         setConnectionDetails(result.data);
         showSnackbar('✅ Firebase Functions connected!', 'success');
-        console.log('Connection details:', result.data);
       } else {
         setConnectionStatus('failed');
         setError(result.data?.error || 'Connection failed');
-        showSnackbar('❌ Connection failed: ' + (result.data?.error || 'Unknown error'), 'error');
+        showSnackbar('❌ Connection failed', 'error');
       }
       
     } catch (err) {
       setConnectionStatus('failed');
       setError(err.message);
       showSnackbar('❌ Connection test error', 'error');
-      console.error('Connection test error:', err);
     }
   };
 
-  // NEW: Handle crop/perspective correction
-const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
-  if (!currentUser) {
-    setError('Please login to use this feature');
-    showSnackbar('Please login first', 'warning');
-    return;
-  }
-
-  if (connectionStatus !== 'connected') {
-    showSnackbar('Please test connection first', 'warning');
-    await testFirebaseConnection();
-    if (connectionStatus !== 'connected') {
+  // FIXED: Handle crop document
+  const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
+    if (!currentUser) {
+      setError('Please login to use this feature');
+      showSnackbar('Please login first', 'warning');
       return;
     }
-  }
 
-  setLoading(true);
-  setError(null);
-  
-  try {
-    console.log('🖼️ Calling correctPerspective...');
-    
-    // TRY DIFFERENT PARAMETER COMBINATIONS:
-    // Option 1: Pass options directly (not nested)
-    const result = await correctPerspective({ 
-      image: imageData,
-      // Pass options directly, not nested in "options" key
-      autoCrop: options.autoCrop || true,
-      enhance: options.enhance || true,
-      contrast: options.contrast || 1.2,
-      brightness: options.brightness || 1.1,
-      grayscale: options.grayscale || false,
-      quality: options.quality || 0.8,
-      userId: currentUser.uid,
-      fileName: fileInfo.name || 'document.jpg'
-    });
-
-    console.log('📊 Crop result.data:', result.data);
-    
-    if (!result.data) {
-      throw new Error('No response from server');
-    }
-    
-    // Check for success flag in different possible locations
-    const success = result.data.success || 
-                   result.data.status === 'success' || 
-                   result.data.processed;
-    
-    if (!success) {
-      throw new Error(result.data.error || result.data.message || 'Cropping failed');
-    }
-
-    // Try different possible response field names
-    const processedImageBase64 = 
-      result.data.croppedImage || 
-      result.data.processedImage || 
-      result.data.image ||
-      result.data.result;
-    
-    if (!processedImageBase64) {
-      console.error('Response data:', result.data);
-      throw new Error('Server returned no processed image. Response: ' + JSON.stringify(result.data));
-    }
-
-    const croppedImage = {
-      id: Date.now() + Math.random(),
-      original: imageData,
-      processed: `data:image/jpeg;base64,${processedImageBase64}`,
-      originalSize: result.data.originalSize || imageData.length,
-      processedSize: result.data.processedSize || processedImageBase64.length,
-      userId: currentUser.uid,
-      timestamp: new Date().toISOString(),
-      options: options,
-      fileName: fileInfo.name || 'document.jpg',
-      type: 'cropped',
-      response: result.data
-    };
-    setProcessedImages(prev => [...prev, croppedImage]);
-    try {
-      // Sanitize metadata: flatten or remove nested objects/arrays
-      let flatDimensions = undefined;
-      if (result.data.dimensions && typeof result.data.dimensions === 'object') {
-        // Flatten dimensions if possible
-        if (result.data.dimensions.processed && result.data.dimensions.processed.width && result.data.dimensions.processed.height) {
-          flatDimensions = `processed:${result.data.dimensions.processed.width}x${result.data.dimensions.processed.height}`;
-        } else if (result.data.dimensions.width && result.data.dimensions.height) {
-          flatDimensions = `${result.data.dimensions.width}x${result.data.dimensions.height}`;
-        }
+    if (connectionStatus !== 'connected') {
+      showSnackbar('Please test connection first', 'warning');
+      await testFirebaseConnection();
+      if (connectionStatus !== 'connected') {
+        return;
       }
-      await saveDocument({
-        image: processedImageBase64,
-        text: '',
-        metadata: {
-          type: 'cropped_document',
-          originalSize: croppedImage.originalSize,
-          processedSize: croppedImage.processedSize,
-          fileName: croppedImage.fileName,
-          dimensions: flatDimensions,
-          source: 'document-scanner',
-          timestamp: croppedImage.timestamp
-        }
-      });
-      showSnackbar('✅ Document cropped, saved, and perspective corrected!', 'success');
-    } catch (storeErr) {
-      console.warn('Cropped document storage failed:', storeErr.message);
-      showSnackbar('✅ Cropped, but storage failed', 'warning');
     }
-    console.log('✅ Cropping successful! Image size:', croppedImage.processed.length);
-    
-  } catch (err) {
-    const errorMessage = err.message || 'Failed to crop document';
-    setError(errorMessage);
-    showSnackbar(`❌ ${errorMessage}`, 'error');
-    console.error('❌ Crop error:', err);
-    
-    // Log full error details
-    if (err.details) {
-      console.error('Error details:', err.details);
-    }
-  } finally {
-    setLoading(false);
-  }
-};
 
-  // Process single document - UPDATED FOR CALLABLE FUNCTION
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // Extract base64 from data URL
+      const base64Image = imageData.includes(',') 
+        ? imageData.split(',')[1] 
+        : imageData;
+
+      const requestPayload = { 
+        image: base64Image, // Send only base64
+        options: {
+          autoCrop: options.autoCrop !== undefined ? options.autoCrop : true,
+          enhance: options.enhance !== undefined ? options.enhance : true,
+          contrast: options.contrast || 1.2,
+          brightness: options.brightness || 1.1,
+          grayscale: options.grayscale || false,
+          quality: options.quality || 0.8
+        },
+        userId: currentUser.uid,
+        fileName: fileInfo.name || 'document.jpg'
+      };
+      
+      console.log('🖼️ Sending crop request, image size:', base64Image.length);
+      
+      const result = await correctPerspective(requestPayload);
+
+      if (!result.data) {
+        throw new Error('No response from server');
+      }
+      
+      if (!result.data.success) {
+        throw new Error(result.data.error || 'Cropping failed');
+      }
+
+      // Get the cropped image base64 from response
+      const croppedImageBase64 = result.data.croppedImage || result.data.processedImage;
+      
+      if (!croppedImageBase64) {
+        console.error('Response:', result.data);
+        throw new Error('No processed image returned');
+      }
+
+      console.log('✅ Cropped image received, size:', croppedImageBase64.length);
+      
+      const croppedImage = {
+        id: Date.now() + Math.random(),
+        original: base64Image, // Store original base64
+        processed: croppedImageBase64, // Store processed base64 (no data URL prefix)
+        originalSize: result.data.originalSize || base64Image.length,
+        processedSize: result.data.processedSize || croppedImageBase64.length,
+        userId: currentUser.uid,
+        timestamp: new Date().toISOString(),
+        options: options,
+        fileName: fileInfo.name || 'document.jpg',
+        type: 'cropped',
+        mimeType: result.data.mimeType || 'image/jpeg'
+      };
+      
+      setProcessedImages(prev => [...prev, croppedImage]);
+      
+      // Save to Firestore
+      try {
+        await saveDocument({
+          image: croppedImageBase64,
+          text: '',
+          metadata: {
+            type: 'cropped_document',
+            originalSize: croppedImage.originalSize,
+            processedSize: croppedImage.processedSize,
+            fileName: croppedImage.fileName,
+            source: 'document-scanner',
+            timestamp: croppedImage.timestamp,
+            compressionRatio: result.data.compressionRatio
+          }
+        });
+        showSnackbar('✅ Document cropped and saved!', 'success');
+      } catch (storeErr) {
+        console.warn('Storage failed:', storeErr.message);
+        showSnackbar('✅ Cropped, but storage failed', 'warning');
+      }
+      
+    } catch (err) {
+      const errorMessage = err.message || 'Failed to crop document';
+      setError(errorMessage);
+      showSnackbar(`❌ ${errorMessage}`, 'error');
+      console.error('Crop error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleEnhanceDocument = async (imageData, options = {}, fileInfo = {}) => {
     if (!currentUser) {
       setError('Please login to use this feature');
@@ -314,47 +302,46 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
     setError(null);
     
     try {
-      // Callable function expects an object, not direct parameters
+      const base64Image = imageData.includes(',') 
+        ? imageData.split(',')[1] 
+        : imageData;
+
       const result = await processDocument({ 
-        image: imageData,
+        image: base64Image,
         options: options,
         userId: currentUser.uid
       });
 
-      console.log('Enhance result:', result.data);
-      
-      // Check result.data.success, not result.success
       if (!result.data?.success) {
         throw new Error(result.data?.error || 'Processing failed');
       }
 
       const enhancedImage = {
         id: Date.now() + Math.random(),
-        original: imageData,
-        processed: `data:${result.data.mimeType || 'image/jpeg'};base64,${result.data.processedImage || result.data.image}`, 
-        originalSize: result.data.originalSize || imageData.length,
+        original: base64Image,
+        processed: result.data.processedImage || result.data.image,
+        originalSize: result.data.originalSize || base64Image.length,
         processedSize: result.data.processedSize || 0,
         userId: currentUser.uid,
         timestamp: new Date().toISOString(),
         options: options,
         fileName: fileInfo.name || 'document.jpg',
-        type: 'enhanced'
+        type: 'enhanced',
+        mimeType: result.data.mimeType || 'image/jpeg'
       };
       
       setProcessedImages(prev => [...prev, enhancedImage]);
 
       try {
-      // Pass an object with image, text, and metadata
         await saveDocument({ 
-          image: result.data.processedImage, // The base64 processed image from the result
-          text: '', // Empty text since we're just enhancing
+          image: enhancedImage.processed,
+          text: '',
           metadata: {
             type: 'enhanced_document',
             originalSize: enhancedImage.originalSize,
             processedSize: enhancedImage.processedSize,
             options: options,
             fileName: enhancedImage.fileName,
-            dimensions: result.data.dimensions,
             source: 'document-scanner',
             timestamp: new Date().toISOString()
           }
@@ -369,13 +356,11 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
       const errorMessage = err.message || 'Failed to enhance document';
       setError(errorMessage);
       showSnackbar(`❌ ${errorMessage}`, 'error');
-      console.error('Enhance error:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  // Extract text from image - UPDATED FOR CALLABLE FUNCTION
   const handleExtractText = async (imageData, fileInfo = {}) => {
     if (!currentUser) {
       setError('Please login to use this feature');
@@ -387,13 +372,14 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
     setError(null);
     
     try {
-      // Callable function expects an object
+      const base64Image = imageData.includes(',') 
+        ? imageData.split(',')[1] 
+        : imageData;
+
       const result = await extractTextFromImage({ 
-        image: imageData,
+        image: base64Image,
         userId: currentUser.uid
       });
-
-      console.log('Extract text result:', result.data);
       
       if (!result.data?.success) {
         throw new Error(result.data?.error || 'Text extraction failed');
@@ -401,7 +387,7 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
       
       const textResult = {
         id: Date.now() + Math.random(),
-        image: imageData,
+        image: base64Image,
         text: result.data.text || '',
         confidence: result.data.confidence || 0,
         userId: currentUser.uid,
@@ -413,8 +399,8 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
       
       try {
         await saveDocument({ 
-          image: imageData, // Original image
-          text: textResult.text, // Extracted text
+          image: base64Image,
+          text: textResult.text,
           metadata: {
             confidence: textResult.confidence,
             type: 'ocr_result',
@@ -439,7 +425,6 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
     }
   };
 
-  // Create PDF - UPDATED FOR CALLABLE FUNCTION
   const handleCreatePDF = async () => {
     if (!currentUser) {
       setError('Please login to use this feature');
@@ -447,8 +432,9 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
       return;
     }
 
+    // Convert base64 images to data URLs for PDF generation
     const imagesToConvert = processedImages.length > 0 
-      ? processedImages.map(img => img.processed)
+      ? processedImages.map(img => createDataUrl(img.processed, img.mimeType))
       : files.map(file => file.dataUrl);
 
     if (imagesToConvert.length === 0) {
@@ -461,7 +447,7 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
     setError(null);
     
     try {
-      // Callable function expects an object
+      // Send data URLs to PDF generator
       const result = await generatePDF({ 
         images: imagesToConvert,
         options: {
@@ -471,15 +457,12 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
         userId: currentUser.uid
       });
 
-      console.log('PDF result:', result.data);
-      
       if (!result.data?.success) {
         throw new Error(result.data?.error || 'PDF creation failed');
       }
       
       setPdfUrl(result.data.pdf);
       
-      // Download PDF
       const link = document.createElement('a');
       link.href = result.data.pdf;
       link.download = `documents_${Date.now()}.pdf`;
@@ -498,7 +481,6 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
     }
   };
 
-  // Camera functions (unchanged)
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -531,13 +513,13 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
         size: imageData.length,
         type: 'image/jpeg',
         dataUrl: imageData,
+        base64: imageData.split(',')[1],
         compressed: false
       }]);
       
       setOpenCamera(false);
       showSnackbar('📸 Image captured successfully!', 'success');
       
-      // Stop camera
       const stream = video.srcObject;
       if (stream) {
         const tracks = stream.getTracks();
@@ -560,7 +542,6 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
     showSnackbar('File removed', 'info');
   };
 
-  // Process all files with options - UPDATED TO INCLUDE CROPPING OPTION
   const handleProcessAll = async (options) => {
     if (files.length === 0) {
       showSnackbar('No files to process', 'warning');
@@ -569,13 +550,11 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
 
     for (const file of files) {
       if (options.autoCrop || options.crop) {
-        // Use cropping function if autoCrop is enabled
         await handleCropDocument(file.dataUrl, options, file);
       } else {
-        // Use regular enhancement
         await handleEnhanceDocument(file.dataUrl, options, file);
       }
-      await new Promise(resolve => setTimeout(resolve, 500)); // Small delay between requests
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   };
 
@@ -697,11 +676,6 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
           }
         >
           <Typography variant="body2">{error}</Typography>
-          {connectionStatus === 'failed' && (
-            <Typography variant="caption">
-              Make sure Firebase Functions are deployed: <code>firebase deploy --only functions</code>
-            </Typography>
-          )}
         </Alert>
       )}
 
@@ -868,7 +842,7 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
           </Paper>
         </Grid>
 
-        {/* Processing Options - THIS WILL NOW HANDLE CROPPING TOO */}
+        {/* Processing Options */}
         {files.length > 0 && connectionStatus === 'connected' && (
           <Grid item xs={12}>
             <ProcessingOptions 
@@ -925,13 +899,15 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
                   <Grid item xs={12} sm={6} md={4} key={img.id}>
                     <Card>
                       <DocumentPreview 
-                        imageUrl={img.processed} 
-                        beforeAfter={img.original}
+                        imageUrl={createDataUrl(img.processed, img.mimeType)} 
+                        beforeAfter={createDataUrl(img.original, img.mimeType)}
                       />
                       <CardContent>
                         <Typography variant="body2" color="success.main" gutterBottom>
                           {img.type === 'cropped' ? '📐 Cropped document' : '✨ Enhanced document'}
-                          {img.processedSize && ` • Size reduced by ${((1 - img.processedSize / img.originalSize) * 100).toFixed(1)}%`}
+                          {img.processedSize && img.originalSize && (
+                            <span> • Size reduced by {((1 - img.processedSize / img.originalSize) * 100).toFixed(1)}%</span>
+                          )}
                         </Typography>
                         <Typography variant="caption" color="textSecondary">
                           {new Date(img.timestamp).toLocaleTimeString()} • {img.fileName}
@@ -941,7 +917,7 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
                         <Button
                           size="small"
                           startIcon={<Download />}
-                          href={img.processed}
+                          href={createDataUrl(img.processed, img.mimeType)}
                           download={`${img.type}_${img.fileName}`}
                         >
                           Download
@@ -949,7 +925,7 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
                         <Button
                           size="small"
                           startIcon={<TextFields />}
-                          onClick={() => handleExtractText(img.processed, { name: img.fileName })}
+                          onClick={() => handleExtractText(createDataUrl(img.processed, img.mimeType), { name: img.fileName })}
                           disabled={loading}
                         >
                           Extract Text
@@ -991,7 +967,7 @@ const handleCropDocument = async (imageData, options = {}, fileInfo = {}) => {
                   <TextResult 
                     text={result.text}
                     confidence={result.confidence}
-                    imageUrl={result.image}
+                    imageUrl={createDataUrl(result.image)}
                     timestamp={result.timestamp}
                     fileName={result.fileName}
                   />
